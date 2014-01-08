@@ -147,11 +147,15 @@ middleware.run({ sum: 0 }, function (err, calc) {
 
   Create a parallel middleware execution pipeline.
 
-### .use([wait,] fn)
+### .use(fn)
 
-  Add a middleware `fn` to the execution pipeline. If a `wait` function is provided, then `fn` won't get executed until the `wait` function returns a truthy result.
+  Add a middleware `fn` to the execution pipeline. 
 
-  The wait function supports a synchronous signature:
+### .when(wait, fn)
+
+  Add a middleware `fn` to the execution pipeline to run after the `wait` says it can.
+
+  The `wait` function supports a synchronous signature:
 
 ```js
 function equals (val) {
