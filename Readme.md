@@ -1,7 +1,8 @@
-
 # parallel-ware
 
   Execute middleware in parallel. For executing in series, see [ware](https://github.com/segmentio/ware). 
+
+![](https://travis-ci.org/segmentio/parallel-ware.png?branch=master)
 
 ## Example
 
