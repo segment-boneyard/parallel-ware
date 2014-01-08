@@ -1,7 +1,7 @@
 
 # parallel-ware
 
-  A [ware](https://github.com/segmentio/middleware) clone that executes middleware in parallel. Supports a simple API for managing execution order.
+  Execute middleware in parallel. For executing in series, see [ware](https://github.com/segmentio/ware). 
 
 ## Example
 
