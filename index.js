@@ -4,6 +4,7 @@ var debug = require('debug')('parallel');
 var defaults = require('defaults');
 var Emitter = require('events').EventEmitter;
 var inherit = require('util').inherits;
+var domain = require('domain');
 
 /**
  * Expose `Parallel`.
@@ -109,16 +110,25 @@ Parallel.prototype.run = function () {
           if (!ready) return done(); // we're not readyso return
 
           var arr = [].slice.call(args);
-          arr.push(function (err) {
+          var cb = function (err) {
             if (err) error.add(err);
             executed += 1;
             execution.executed = true;
             debug('middleware %s executed', execution.fn.name);
             done(); // don't pass back the error to batch or it'll exit
-          });
+          };
+          arr.push(cb);
 
           debug('middleware %s is ready to run ..', execution.fn.name);
-          execution.fn.apply(null, arr);
+          // wrap it in a custom domain to convert thrown exceptions into returned ones
+          var d = domain.create();
+          d.on('error', function(err){
+            debug('error processing parallel function: %s \n %s', err, err.stack);
+            cb(err);
+          });
+          d.run(function() {
+            execution.fn.apply(null, arr);
+          });
         });
       });
     });
@@ -166,22 +176,31 @@ Parallel.prototype.run = function () {
  */
 
 function executeWait (args, waitFn, callback) {
-  var arr = [].slice.call(args);
-  if (waitFn.length > args.length) {
-    // asynchronous case, more arguments than inputs so assume callback
-    // wrap in a tick to allow to remedy call stack explosion
-    process.nextTick(function () {
-      arr.push(callback);
-      waitFn.apply(null, arr);
-    });
-  } else {
-    // synchronous case, amount of arguments is less or equal to arity
-    process.nextTick(function () {
-      var result = waitFn.apply(null, arr);
-      if (result instanceof Error) return callback(result);
-      callback(null, result);
-    });
-  }
+  // wrap everyithing in a domain to convert thrown errors into returned errors.
+  var d = domain.create();
+  d.on('error', function(err){
+    // handle the error safely
+    debug('error processing wait function: %s \n %s', err, err.stack);
+    callback(err);
+  });
+  d.run(function(){
+    var arr = [].slice.call(args);
+    if (waitFn.length > args.length) {
+      // asynchronous case, more arguments than inputs so assume callback
+      // wrap in a tick to allow to remedy call stack explosion
+      process.nextTick(function () {
+        arr.push(callback);
+        waitFn.apply(null, arr);
+      });
+    } else {
+      // synchronous case, amount of arguments is less or equal to arity
+      process.nextTick(function () {
+        var result = waitFn.apply(null, arr);
+        if (result instanceof Error) return callback(result);
+        callback(null, result);
+      });
+    }
+  });
 }
 
 /**

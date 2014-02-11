@@ -77,14 +77,17 @@ describe('parallel-ware', function () {
   it('should not halt execution for an error', function (done) {
     var vector = [false, false, false];
     var error = new Error('An error');
+    var thrownError = new Error('Thrown err');
     var middleware = parallel()
       .use(mark(vector, 0))
       .use(fail(error))
+      .use(failThrow(thrownError))
       .use(mark(vector, 2))
       .run(function (err) {
         assert(err);
-        assert(err.errors.length === 1);
+        assert(err.errors.length === 2);
         assert(err.errors[0] === error);
+        assert(err.errors[1] === thrownError);
         assert.deepEqual(vector, [true, false, true]);
         done();
       });
@@ -145,6 +148,19 @@ function fail (err) {
   return function () {
     var next = arguments[arguments.length - 1];
     next(err);
+  };
+}
+
+/**
+ * Return a middleware that always fails by throwing an `err`.
+ *
+ * @param {Error} err
+ * @return {Function}
+ */
+
+function failThrow (err) {
+  return function () {
+    throw err;
   };
 }
 
