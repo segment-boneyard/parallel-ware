@@ -5,6 +5,7 @@ var defaults = require('defaults');
 var Emitter = require('events').EventEmitter;
 var inherit = require('util').inherits;
 var domain = require('domain');
+var flatnest = require('flatnest');
 
 /**
  * Expose `Parallel`.
@@ -70,6 +71,13 @@ Parallel.prototype.when = function (wait, fn) {
   return this;
 };
 
+Parallel.prototype.conflict = function (fn) {
+  if (typeof fn !== 'function')
+    throw new Error('You must provide a conflict function.');
+  this.conflictFn = fn;
+  return this;
+};
+
 /**
  * Execute the middleware with the provided `args`
  * and optional `callback`.
@@ -92,6 +100,9 @@ Parallel.prototype.run = function () {
     return new Execution(fns[0], fns[1]);
   });
 
+  // lets make the assumption that args are objects
+  var updateArgs = {};
+
   function runBatch (callback) {
     var executed = 0; // count the amount of executed middleware
 
@@ -112,6 +123,38 @@ Parallel.prototype.run = function () {
           var arr = [].slice.call(args);
           var cb = function (err) {
             if (err) error.add(err);
+            var flattened = flatnest.flatten(args);
+            // find diff of flattend from updatArgs
+            Object.keys(flattened).forEach(function(k) {
+              var v = {
+                value: flattened[k],
+                fnName: execution.fn.name
+              };
+              if (updateArgs.hasOwnProperty(k)) {
+                if (v.value !== updateArgs[k].value) {
+                  // merge conflict
+                  // store all previous options under a choices key
+                  var choicesKey = k + '__choices';
+                  if (!updateArgs[choicesKey]) {
+                    updateArgs[choicesKey] = [updateArgs[k], v];
+                  } else {
+                    updateArgs[choicesKey].push(v);
+                  }
+                  // resolve conflict if we have a conflict function defined
+                  if ('function' == typeof self.conflict) {
+                    var conflictArgs = [k, updateArgs[k], v, updateArgs[choicesKey]].concat([].slice.call(args));
+                    v = self.conflictFn.apply(null, conflictArgs);
+                    // make sure args at path have the correct value
+                    flatnest.replace(args, k, v.value);
+                  }
+                  updateArgs[k] = v;
+                }
+                // otherwise value is the same - assume earlier execution set it
+              } else {
+                // store the new value in our list.
+                updateArgs[k] = v;
+              }
+            });
             executed += 1;
             execution.executed = true;
             debug('middleware %s executed', execution.fn.name);

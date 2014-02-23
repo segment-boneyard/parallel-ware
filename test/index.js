@@ -61,6 +61,30 @@ describe('parallel-ware', function () {
       });
   });
 
+  it('should be able to handle conflicts', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(wait(vector, 1), function check (vector, next) {
+        assert(vector[1]); // shouldn't get executed until vector[1] executed
+        vector[2] = true;
+        vector[1] = false;
+        next();
+      })
+      .use(mark(vector, 0))
+      .use(mark(vector, 1))
+      .conflict(function(key, existing, candidate) {
+        if (candidate.value) {
+          return candidate;
+        }
+        return existing;
+      })
+      .run(vector, function (err) {
+        if (err) return done(err);
+        assert.deepEqual(vector, [true, true, true]);
+        done();
+      });
+  });
+
   it('should never execute a non-ready middleware', function (done) {
     var vector = [false, false, false];
     var middleware = parallel()
