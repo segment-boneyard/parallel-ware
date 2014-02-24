@@ -117,6 +117,54 @@ describe('parallel-ware', function () {
       });
   });
 
+
+  it('should group executions by tier', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(wait(vector, 1), function(next) {
+        assert.deepEqual(vector, [false, true, false]);
+        vector[2] = true;
+        next();
+      }, 1)
+      .when(wait(vector, 2), function(next) {
+        assert.deepEqual(vector, [false, true, true]);
+        vector[0] = true;
+        next();
+      })
+      .use(mark(vector, 1))
+      .run(function (err) {
+        assert.deepEqual(vector, [true, true, true]);
+        done();
+      });
+  });
+
+  it('should group executions by tier and not execute some', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(function() {
+        // as soon as vector 0 is set we execute
+        return vector[0] && !vector[1];
+      }, function(next) {
+        // this should never run
+        assert(false);
+        next();
+      }, 1)
+      .when(wait(vector, 0), function(next) {
+        // higher tier plugin that will execute first
+        assert.deepEqual(vector, [true, false, false]);
+        // setting vector 1 prevents first plugin from running
+        vector[1] = true;
+        vector[2] = true;
+        next();
+      })
+      .use(mark(vector, 0))
+      .run(function(err) {
+        assert(!err);
+        assert.deepEqual(vector, [true, true, true]);
+        done();
+      });
+  });
+
   it('should emit progress events', function (done) {
     var vector = [false, false];
     var middleware = parallel()

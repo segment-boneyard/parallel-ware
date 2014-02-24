@@ -64,10 +64,10 @@ Parallel.prototype.use = function (fn) {
  * @return {Parallel}
  */
 
-Parallel.prototype.when = function (wait, fn) {
+Parallel.prototype.when = function (wait, fn, tier) {
   if (typeof wait !== 'function' || typeof fn !== 'function')
     throw new Error('You must provide a `wait` and `fn` functions.');
-  this.middleware.push([wait, fn]);
+  this.middleware.push([wait, fn, tier]);
   return this;
 };
 
@@ -97,7 +97,7 @@ Parallel.prototype.run = function () {
     : [].slice.call(arguments);
 
   var executions = this.middleware.map(function (fns) {
-    return new Execution(fns[0], fns[1]);
+    return new Execution(fns[0], fns[1], fns[2]);
   });
 
   // lets make the assumption that args are objects
@@ -106,23 +106,55 @@ Parallel.prototype.run = function () {
   function runBatch (callback) {
     var executed = 0; // count the amount of executed middleware
 
-    var batch = new Batch()
-      .concurrency(self.options.middleware);
+    var waitBatch = new Batch().concurrency(self.options.middleware);
+    var batch = new Batch().concurrency(self.options.middleware);
+    batch.throws(false);
 
+    // run all wait functions
     executions.forEach(function (execution) {
       if (execution.executed) return; // we've already executed this
-      batch.push(function (done) {
+      waitBatch.push(function (done) {
         executeWait(args, execution.wait, function (err, ready) {
           if (err) {
             executed.executed = true; // if error in wait, dont execute again
-            return error.add(err);
+            error.add(err);
+            return done();
           }
 
-          if (!ready) return done(); // we're not readyso return
+          execution.ready = ready;
+          done();
+        });
+      });
+    });
 
+    // upon completion get all ready executions
+    // sort by tier and run all those in the highest tier
+    // this works for case of no tier 0 ready, but a tier 1 ready.
+    waitBatch.end(function (err) {
+      var sortedExecutions = executions.filter(function(e) {
+        return !e.executed && e.ready;
+      }).sort(function(a, b) {
+        return a.tier - b.tier;
+      });
+      var cuttoffIndex = sortedExecutions.length;
+      var lowest = (sortedExecutions[0] && sortedExecutions[0].tier) || 0;
+      for (var i=0; i < cuttoffIndex; i++) {
+        if (sortedExecutions[i].tier > lowest) {
+          cuttoffIndex = i;
+        }
+      }
+
+      sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
+        batch.push(function (done) {
           var arr = [].slice.call(args);
           var cb = function (err) {
-            if (err) error.add(err);
+            executed += 1;
+            execution.executed = true;
+            debug('middleware %s executed', execution.fn.name);
+            if (err) {
+              error.add(err);
+              return done();
+            }
             var flattened = flatnest.flatten(args);
             // find diff of flattend from updatArgs
             Object.keys(flattened).forEach(function(k) {
@@ -155,9 +187,6 @@ Parallel.prototype.run = function () {
                 updateArgs[k] = v;
               }
             });
-            executed += 1;
-            execution.executed = true;
-            debug('middleware %s executed', execution.fn.name);
             done(); // don't pass back the error to batch or it'll exit
           };
           arr.push(cb);
@@ -166,25 +195,34 @@ Parallel.prototype.run = function () {
           // wrap it in a custom domain to convert thrown exceptions into returned ones
           var d = domain.create();
           d.on('error', function(err){
+            console.log('domain received %s', err);
             debug('error processing parallel function: %s \n %s', err, err.stack);
             cb(err);
           });
           d.run(function() {
+            execution.executed = true;
             execution.fn.apply(null, arr);
           });
         });
       });
-    });
 
-    batch.on('progress', function (progress) {
-      self.emit('progress', progress);
-    });
+      batch.on('progress', function (progress) {
+        self.emit('progress', progress);
+      });
 
-    // pass back the total amount of executed steps
-    batch.end(function (err) {
-      batch.removeAllListeners();
-      debug('finished batch with %d executions', executed);
-      callback(err, executed);
+      // pass back the total amount of executed steps
+      batch.end(function (err) {
+        if (err) {
+          err.forEach(function(e) {
+            if (e) {
+              error.add(e);
+            }
+          });
+        }
+        batch.removeAllListeners();
+        debug('finished batch with %d executions', executed);
+        callback(err, executed);
+      });
     });
 
     return batch;
@@ -263,9 +301,11 @@ function immediate () {
  * @param {Function} fn
  */
 
-function Execution (wait, fn) {
+function Execution (wait, fn, tier) {
   this.wait = wait;
   this.fn = fn;
+  this.tier = tier || 0;
+  this.ready = false;
   this.executed = false;
 }
 
