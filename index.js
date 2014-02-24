@@ -173,7 +173,7 @@ Parallel.prototype.run = function () {
                     updateArgs[choicesKey].push(v);
                   }
                   // resolve conflict if we have a conflict function defined
-                  if ('function' == typeof self.conflict) {
+                  if ('function' == typeof self.conflictFn) {
                     var conflictArgs = [k, updateArgs[k], v, updateArgs[choicesKey]].concat([].slice.call(args));
                     v = self.conflictFn.apply(null, conflictArgs);
                     // make sure args at path have the correct value
