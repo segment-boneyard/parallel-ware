@@ -147,10 +147,17 @@ Parallel.prototype.run = function () {
       sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
         batch.push(function (done) {
           var arr = [].slice.call(args);
-          var cb = function (err) {
+          var cb = function (err, retry) {
             executed += 1;
-            execution.executed = true;
             debug('middleware %s executed', execution.fn.name);
+            if (retry) {
+              // reset to unready to possibly run again
+              debug('middleware %s retrying', execution.fn.name);
+              execution.executed = false;
+              execution.ready = false;
+              return done();
+            }
+            execution.executed = true;
             if (err) {
               error.add(err);
               return done();
