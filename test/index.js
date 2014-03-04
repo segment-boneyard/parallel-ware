@@ -175,6 +175,30 @@ describe('parallel-ware', function () {
     });
     middleware.run();
   });
+
+  it.only('should emit progress events for a specific job', function (done) {
+    var vector = [false, false, false, false];
+    var middleware = parallel()
+      .use(function firstMark(next){vector[0] = true; next();})
+      .use(function thirdMark(next){setTimeout(function() {vector[2] = true; next();}, 500);});
+    var middlewaretwo = parallel()
+      .use(function secondMark(next){vector[1] = true; next();})
+      .use(function fourthMark(next){vector[3] = true; next();});
+
+    var firstEmitter = middleware.run(function(err) {
+    });
+    firstEmitter.on('update', function(update) {
+      if (update.type.indexOf('execution complete') === 0) {
+        assert.deepEqual(vector, [true, true, true, true]);
+        done();
+      }
+    });
+    middlewaretwo.run(function(err) {
+      assert.deepEqual(vector, [true, true, false, true]);
+    });
+
+  });
+
 });
 
 /**

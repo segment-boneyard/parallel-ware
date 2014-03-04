@@ -3,9 +3,22 @@ var Batch = require('batch');
 var debug = require('debug')('parallel');
 var defaults = require('defaults');
 var Emitter = require('events').EventEmitter;
-var inherit = require('util').inherits;
+var util = require('util');
+var inherit = util.inherits;
+var format = util.format;
 var domain = require('domain');
 var flatnest = require('flatnest');
+
+// events
+// log
+//'execution_complete'
+// 'batch_started'
+// 'batch_ended'
+// 'middleware_ended'
+
+// progress
+// progress
+
 
 /**
  * Expose `Parallel`.
@@ -90,15 +103,17 @@ Parallel.prototype.conflict = function (fn) {
 Parallel.prototype.run = function () {
   var self = this;
   var last = arguments[arguments.length - 1];
-  var callback = 'function' == typeof last ? last : null;
+  var inputCallback = 'function' == typeof last ? last : null;
   var error = new BatchError();
-  var args = callback
+  var args = inputCallback
     ? [].slice.call(arguments, 0, arguments.length - 1)
     : [].slice.call(arguments);
 
   var executions = this.middleware.map(function (fns) {
     return new Execution(fns[0], fns[1], fns[2]);
   });
+
+  var emitter = new Emitter();
 
   // lets make the assumption that args are objects
   var updateArgs = {};
@@ -144,6 +159,11 @@ Parallel.prototype.run = function () {
         }
       }
 
+      emitter.emit('update', {
+        type: 'wait complete',
+        log: format('%d ready and %d queued', sortedExecutions.length, cuttoffIndex)
+      });
+
       sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
         batch.push(function (done) {
           var arr = [].slice.call(args);
@@ -153,12 +173,20 @@ Parallel.prototype.run = function () {
             if (retry) {
               // reset to unready to possibly run again
               debug('middleware %s retrying', execution.fn.name);
+              emitter.emit('update', {
+                type: 'execution complete',
+                log: format('Retrying %s', execution.fn.name)
+              });
               execution.executed = false;
               execution.ready = false;
               return done();
             }
             execution.executed = true;
             if (err) {
+              emitter.emit('update', {
+                type: 'execution complete',
+                log: format('Error %s %s', execution.fn.name, error)
+              });
               error.add(err);
               return done();
             }
@@ -194,6 +222,10 @@ Parallel.prototype.run = function () {
                 updateArgs[k] = v;
               }
             });
+            emitter.emit('update', {
+              type: 'execution complete',
+              log: format('Success %s', execution.fn.name)
+            });
             done(); // don't pass back the error to batch or it'll exit
           };
           arr.push(cb);
@@ -207,6 +239,10 @@ Parallel.prototype.run = function () {
             cb(err);
           });
           d.run(function() {
+            emitter.emit('update', {
+              type: 'execution starting',
+              log: format('Starting %s', execution.fn.name)
+            });
             execution.executed = true;
             execution.fn.apply(null, arr);
           });
@@ -214,6 +250,11 @@ Parallel.prototype.run = function () {
       });
 
       batch.on('progress', function (progress) {
+        emitter.emit('update', {
+          type: 'progress',
+          log: format('Batch updated to pending: %d, total: %d, complete: %d', progress.pending, progress.total, progress.complete),
+          data: progress
+        });
         self.emit('progress', progress);
       });
 
@@ -236,22 +277,35 @@ Parallel.prototype.run = function () {
   }
 
   function next () {
+    emitter.emit('update', {
+      type: 'batch start',
+      log: 'Batch started'
+    });
     var batch = runBatch(function (err, executed) {
+      emitter.emit('update', {
+        type: 'batch ended',
+        log: format('Batch completed with %d executions and err: %s', executed, err)
+      });
       // if we executed anything, run through the middleware again
       // to make sure no wait dependencies were blocked
       if (executed > 0) return next();
       // at this point, there's nothing left to execute, so return
-      if (callback) {
+      emitter.emit('update', {
+        type: 'middleware ended',
+        log: format('middleware completed all possible jobs')
+      });
+      if (inputCallback) {
         err = error.errors.length > 0 ? error : null;
         var arr = [].slice.call(args);
         arr.unshift(err);
-        callback.apply(null, arr);
+        inputCallback.apply(null, arr);
       }
     });
   }
 
   next();
-  return this;
+  emitter.middleware = this;
+  return emitter;
 };
 
 /**
