@@ -185,7 +185,7 @@ Parallel.prototype.run = function () {
             if (err) {
               emitter.emit('update', {
                 type: 'execution complete',
-                log: format('Error %s %s', execution.fn.name, error)
+                log: format('Error %s %s', execution.fn.name, error.message)
               });
               error.add(err);
               return done();
@@ -235,7 +235,7 @@ Parallel.prototype.run = function () {
           var d = domain.create();
           d.on('error', function(err){
             console.log('domain received %s', err);
-            debug('error processing parallel function: %s \n %s', err, err.stack);
+            debug('error processing parallel function: %s \n %s', err.message, err.stack);
             cb(err);
           });
           d.run(function() {
@@ -322,7 +322,7 @@ function executeWait (args, waitFn, callback) {
   var d = domain.create();
   d.on('error', function(err){
     // handle the error safely
-    debug('error processing wait function: %s \n %s', err, err.stack);
+    debug('error processing wait function: %s \n %s', err.message, err.stack);
     callback(err);
   });
   d.run(function(){
