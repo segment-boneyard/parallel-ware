@@ -284,7 +284,7 @@ Parallel.prototype.run = function () {
     var batch = runBatch(function (err, executed) {
       emitter.emit('update', {
         type: 'batch ended',
-        log: format('Batch completed with %d executions and err: %s', executed, err)
+        log: format('Batch completed with %d executions and err: %s', executed, err && err.message)
       });
       // if we executed anything, run through the middleware again
       // to make sure no wait dependencies were blocked
