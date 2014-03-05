@@ -397,6 +397,6 @@ inherit(BatchError, Error);
 BatchError.prototype.add = function (err) {
   this.errors.push(err);
   this.message = this.errors.length + ' error(s) have occured: ' +
-    this.errors.map(function (err) { return err.toString(); }).join(', ');
+    this.errors.map(function (err) { return err.message; }).join(', ');
   return this;
 };
