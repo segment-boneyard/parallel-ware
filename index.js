@@ -61,10 +61,10 @@ Parallel.prototype.concurrency = function (max) {
  * @return {Parallel}
  */
 
-Parallel.prototype.use = function (fn) {
+Parallel.prototype.use = function (fn, tier, timeout) {
   if (typeof fn !== 'function')
     throw new Error('You must provide a function.');
-  this.middleware.push([immediate, fn]);
+  this.middleware.push([immediate, fn, tier, timeout]);
   return this;
 };
 
@@ -77,10 +77,10 @@ Parallel.prototype.use = function (fn) {
  * @return {Parallel}
  */
 
-Parallel.prototype.when = function (wait, fn, tier) {
+Parallel.prototype.when = function (wait, fn, tier, timeout) {
   if (typeof wait !== 'function' || typeof fn !== 'function')
     throw new Error('You must provide a `wait` and `fn` functions.');
-  this.middleware.push([wait, fn, tier]);
+  this.middleware.push([wait, fn, tier, timeout]);
   return this;
 };
 
@@ -110,7 +110,7 @@ Parallel.prototype.run = function () {
     : [].slice.call(arguments);
 
   var executions = this.middleware.map(function (fns) {
-    return new Execution(fns[0], fns[1], fns[2]);
+    return new Execution(fns[0], fns[1], fns[2], fns[3]);
   });
 
   var emitter = new Emitter();
@@ -167,7 +167,14 @@ Parallel.prototype.run = function () {
       sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
         batch.push(function (done) {
           var arr = [].slice.call(args);
+          var cbExecuted = false;
           var cb = function (err, retry) {
+            if (cbExecuted) {
+              return;
+            } else {
+              cbExecuted = true;
+            }
+
             executed += 1;
             debug('middleware %s executed', execution.fn.name);
             if (retry) {
@@ -245,6 +252,12 @@ Parallel.prototype.run = function () {
             });
             execution.executed = true;
             execution.fn.apply(null, arr);
+            // make sure we execute cb within timeout
+            if (execution.timeout > 0) {
+              setTimeout(function() {
+                cb(new Error('ParallelWare kill execution since it exceeded timeout of ' + execution.timeout));
+              }, execution.timeout);
+            }
           });
         });
       });
@@ -362,10 +375,11 @@ function immediate () {
  * @param {Function} fn
  */
 
-function Execution (wait, fn, tier) {
+function Execution (wait, fn, tier, timeout) {
   this.wait = wait;
   this.fn = fn;
   this.tier = tier || 0;
+  this.timeout = timeout || 0;
   this.ready = false;
   this.executed = false;
 }

@@ -176,7 +176,7 @@ describe('parallel-ware', function () {
     middleware.run();
   });
 
-  it.only('should emit progress events for a specific job', function (done) {
+  it('should emit progress events for a specific job', function (done) {
     var vector = [false, false, false, false];
     var middleware = parallel()
       .use(function firstMark(next){vector[0] = true; next();})
@@ -195,6 +195,19 @@ describe('parallel-ware', function () {
     });
     middlewaretwo.run(function(err) {
       assert.deepEqual(vector, [true, true, false, true]);
+    });
+
+  });
+
+  it('should respect execution timeouts', function (done) {
+    var vector = [false, false];
+    var middleware = parallel()
+      .use(function firstMark(next){setTimeout(function() {vector[2] = true; next();}, 1000);}, null, 500);
+
+    middleware.run(function(err) {
+      assert(err);
+      assert.deepEqual(vector, [false, false]);
+      done();
     });
 
   });
