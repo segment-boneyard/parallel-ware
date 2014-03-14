@@ -91,6 +91,13 @@ Parallel.prototype.conflict = function (fn) {
   return this;
 };
 
+Parallel.prototype.cache = function (fn) {
+  if (typeof fn !== 'function')
+    throw new Error('You must provide a cache function.');
+  this.cache = fn;
+  return this;
+};
+
 /**
  * Execute the middleware with the provided `args`
  * and optional `callback`.
@@ -168,6 +175,7 @@ Parallel.prototype.run = function () {
         batch.push(function (done) {
           var arr = [].slice.call(args);
           var cbExecuted = false;
+
           var cb = function (err, retry) {
             if (cbExecuted) {
               return;
@@ -197,8 +205,11 @@ Parallel.prototype.run = function () {
               error.add(err);
               return done();
             }
+
             var flattened = flatnest.flatten(args);
+            var cache = {};
             // find diff of flattend from updatArgs
+            // store updated values in cache for savin
             Object.keys(flattened).forEach(function(k) {
               var v = {
                 value: flattened[k],
@@ -222,19 +233,38 @@ Parallel.prototype.run = function () {
                     flatnest.replace(args, k, v.value);
                   }
                   updateArgs[k] = v;
+
+                  // store value in cache
+                  cache[k] = flattened[k];
                 }
                 // otherwise value is the same - assume earlier execution set it
               } else {
                 // store the new value in our list.
                 updateArgs[k] = v;
+                // store value in cache
+                cache[k] = flattened[k];
               }
             });
+
             emitter.emit('update', {
               type: 'execution complete',
               log: format('Success %s', execution.fn.name)
             });
-            done(); // don't pass back the error to batch or it'll exit
+            // cache now contains all the new values
+            // from this module. If we have a cache plugin, use it
+            if ('function' == typeof self.cache) {
+              var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
+              // cache is likely async ....
+              var cacheFn = self.cache.set;
+              var async = cacheFn.length > args.length;
+              executeCache(cacheArgs, cacheFn, async, function(err, result) {
+                done();
+              });
+            } else {
+              done(); // don't pass back the error to batch or it'll exit
+            }
           };
+
           arr.push(cb);
 
           debug('middleware %s is ready to run ..', execution.fn.name);
@@ -351,6 +381,44 @@ function executeWait (args, waitFn, callback) {
       // synchronous case, amount of arguments is less or equal to arity
       process.nextTick(function () {
         var result = waitFn.apply(null, arr);
+        if (result instanceof Error) return callback(result);
+        callback(null, result);
+      });
+    }
+  });
+}
+
+
+/**
+ * Executs the wait function with support for synchronous (equal `args.length`)
+ * and asynchronous (equals `args.length` + 1) function signatures.
+ *
+ * @param {Array|Object} args
+ * @param {Function} waitFn
+ * @param {Function} callback
+ */
+
+function executeCache (cacheArgs, cacheFn, async, callback) {
+  // wrap everyithing in a domain to convert thrown errors into returned errors.
+  var d = domain.create();
+  d.on('error', function(err){
+    // handle the error safely
+    debug('error processing cache function: %s \n %s', err.message, err.stack);
+    callback(err);
+  });
+  d.run(function(){
+    var arr = [].slice.call(cacheArgs);
+    if (async) {
+      // asynchronous case
+      // wrap in a tick to allow to remedy call stack explosion
+      process.nextTick(function () {
+        arr.push(callback);
+        cacheFn.apply(null, arr);
+      });
+    } else {
+      // synchronous case
+      process.nextTick(function () {
+        var result = cacheFn.apply(null, arr);
         if (result instanceof Error) return callback(result);
         callback(null, result);
       });
