@@ -177,7 +177,7 @@ Parallel.prototype.run = function () {
           var arr = [].slice.call(args);
           var cbExecuted = false;
 
-          var cb = function (err, retry) {
+          var cb = function (err, retry, fromCache) {
             if (cbExecuted) {
               return;
             } else {
@@ -253,7 +253,7 @@ Parallel.prototype.run = function () {
             });
             // cache now contains all the new values
             // from this module. If we have a cache plugin, use it
-            if (self.cache && 'function' == typeof self.cache.set) {
+            if (!fromCache && self.cache && 'function' == typeof self.cache.set) {
               var nestedCache = flatnest.nest(cache);
               var cacheArgs = [execution.fn.name];
               nestedCache.forEach(function(i) {
@@ -298,7 +298,8 @@ Parallel.prototype.run = function () {
                 // result is true if cache found
                 if (err) debug('Cache get for %s, had error %s', execution.fn.name, err.message);
                 if (result) {
-                  cb(null);
+                  // consider passing cache info to cb
+                  cb(null, false, true);
                 } else {
                   // cache miss - run function
                   execution.fn.apply(null, arr);
