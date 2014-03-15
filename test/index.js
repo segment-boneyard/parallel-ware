@@ -212,7 +212,7 @@ describe('parallel-ware', function () {
 
   });
 
-  it.only('should be fire cache events for execution', function (done) {
+  it('should be fire cache events for execution', function (done) {
     function CacheFn () {
       if (!(this instanceof CacheFn)) return new CacheFn();
     }
