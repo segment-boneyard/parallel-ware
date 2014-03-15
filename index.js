@@ -91,9 +91,10 @@ Parallel.prototype.conflict = function (fn) {
   return this;
 };
 
-Parallel.prototype.cache = function (fn) {
-  if (typeof fn !== 'function')
-    throw new Error('You must provide a cache function.');
+Parallel.prototype.setCache = function (fn) {
+  fn = fn || {};
+  if (typeof fn.set !== 'function' || typeof fn.get !== 'function')
+    throw new Error('You must provide a cache with a get and set function');
   this.cache = fn;
   return this;
 };
@@ -252,11 +253,16 @@ Parallel.prototype.run = function () {
             });
             // cache now contains all the new values
             // from this module. If we have a cache plugin, use it
-            if ('function' == typeof self.cache) {
-              var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
+            if (self.cache && 'function' == typeof self.cache.set) {
+              var nestedCache = flatnest.nest(cache);
+              var cacheArgs = [execution.fn.name];
+              nestedCache.forEach(function(i) {
+                cacheArgs.push(i);
+              });
+              //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
               // cache is likely async ....
               var cacheFn = self.cache.set;
-              var async = cacheFn.length > args.length;
+              var async = cacheFn.length > args.length + 1;
               executeCache(cacheArgs, cacheFn, async, function(err, result) {
                 done();
               });
@@ -281,7 +287,27 @@ Parallel.prototype.run = function () {
               log: format('Starting %s', execution.fn.name)
             });
             execution.executed = true;
-            execution.fn.apply(null, arr);
+            // cache or execute;
+            if (self.cache && 'function' == typeof self.cache.get) {
+              var cacheArgs = [execution.fn.name].concat([].slice.call(arr));
+              //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
+              // cache is likely async ....
+              var cacheFn = self.cache.get;
+              var async = cacheFn.length > args.length + 1;
+              executeCache(cacheArgs, cacheFn, async, function(err, result) {
+                // result is true if cache found
+                if (err) debug('Cache get for %s, had error %s', execution.fn.name, err.message);
+                if (result) {
+                  cb(null);
+                } else {
+                  // cache miss - run function
+                  execution.fn.apply(null, arr);
+                }
+              });
+            } else {
+              execution.fn.apply(null, arr);
+            }
+
             // make sure we execute cb within timeout
             if (execution.timeout > 0) {
               setTimeout(function() {
@@ -390,11 +416,11 @@ function executeWait (args, waitFn, callback) {
 
 
 /**
- * Executs the wait function with support for synchronous (equal `args.length`)
+ * Executs the cache function with support for synchronous (equal `args.length`)
  * and asynchronous (equals `args.length` + 1) function signatures.
  *
- * @param {Array|Object} args
- * @param {Function} waitFn
+ * @param {Array|Object} cacheArgs
+ * @param {Function} cacheFn
  * @param {Function} callback
  */
 

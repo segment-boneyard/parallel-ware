@@ -212,6 +212,62 @@ describe('parallel-ware', function () {
 
   });
 
+  it.only('should be fire cache events for execution', function (done) {
+    function CacheFn () {
+      if (!(this instanceof CacheFn)) return new CacheFn();
+    }
+    CacheFn.prototype.set = function(key, vectorChange) {
+      if (vectorChange[2]) {
+        assert(key == 'check');
+      }
+      if (key == 'initialize') {
+        vectorChange.forEach(function(v) {
+          assert(!v);
+        });
+      } else {
+        vectorChange.forEach(function(v) {
+          assert(v);
+        });
+      }
+    };
+    CacheFn.prototype.get = function(key, vector) {
+      if (key === 'cachedValue') {
+        vector[3] = 'cached';
+        return true;
+      }
+      return false;
+    };
+
+    var cacheInstance = new CacheFn();
+    var initialVector = [false, false, false, false, false];
+    var middleware = parallel()
+      .setCache(cacheInstance)
+      .when(waitInput(1), function check (vector, next) {
+        assert(vector[1]); // shouldn't get executed until vector[1] executed
+        vector[2] = true;
+        next();
+      })
+      .use(function initialize(vector, next) {
+        initialVector.forEach(function (v) {vector.push(v);});
+        next();
+      })
+      .use(function cachedValue(vector, next) {
+        vector[3] = 'new';
+        next();
+      })
+      .use(function cacheMiss(vector, next) {
+        vector[4] = 'cacheMiss';
+        next();
+      })
+      .use(markInput(0))
+      .use(markInput(1))
+      .run([], function (err, vector) {
+        if (err) return done(err);
+        assert.deepEqual(vector, [true, true, true, 'cached', 'cacheMiss']);
+        done();
+      });
+  });
+
 });
 
 /**
@@ -231,6 +287,13 @@ function mark (vector, position, fn) {
   };
 }
 
+function markInput (position) {
+  return function markInput (vector, next) {
+    vector[position] = true;
+    next();
+  };
+}
+
 /**
  * Return a wait function that waits until the boolean at `position`
  * in the `vector` is true.
@@ -242,6 +305,12 @@ function mark (vector, position, fn) {
 
 function wait (vector, position) {
   return function () {
+    return vector[position];
+  };
+}
+
+function waitInput (position) {
+  return function (vector) {
     return vector[position];
   };
 }
