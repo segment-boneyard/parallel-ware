@@ -216,7 +216,7 @@ describe('parallel-ware', function () {
     function CacheFn () {
       if (!(this instanceof CacheFn)) return new CacheFn();
     }
-    CacheFn.prototype.set = function(key, vectorChange) {
+    CacheFn.prototype.set = function(key, vectorChange, callback) {
       if (vectorChange[2]) {
         assert(key == 'check');
       }
@@ -229,13 +229,14 @@ describe('parallel-ware', function () {
           assert(v);
         });
       }
+      callback(null);
     };
-    CacheFn.prototype.get = function(key, vector) {
+    CacheFn.prototype.get = function(key, vector, callback) {
       if (key === 'cachedValue') {
         vector[3] = 'cached';
-        return true;
+        return callback(null, true);
       }
-      return false;
+      return callback(null, false);
     };
 
     var cacheInstance = new CacheFn();
@@ -252,7 +253,7 @@ describe('parallel-ware', function () {
         next();
       })
       .use(function cachedValue(vector, next) {
-        vector[3] = 'new';
+        vector[3] = 'newValueIgnored';
         next();
       })
       .use(function cacheMiss(vector, next) {

@@ -289,7 +289,7 @@ Parallel.prototype.run = function () {
             execution.executed = true;
             // cache or execute;
             if (self.cache && 'function' == typeof self.cache.get) {
-              var cacheArgs = [execution.fn.name].concat([].slice.call(arr));
+              var cacheArgs = [execution.fn.name].concat([].slice.call(args));
               //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
               // cache is likely async ....
               var cacheFn = self.cache.get;
