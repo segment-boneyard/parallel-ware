@@ -216,7 +216,8 @@ describe('parallel-ware', function () {
     function CacheFn () {
       if (!(this instanceof CacheFn)) return new CacheFn();
     }
-    CacheFn.prototype.set = function(key, vectorChange, callback) {
+    CacheFn.prototype.set = function(key, vectorChangeObject, callback) {
+      var vectorChange = vectorChangeObject.diff;
       if (vectorChange[2]) {
         assert(key == 'check');
       }

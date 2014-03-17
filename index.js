@@ -256,8 +256,11 @@ Parallel.prototype.run = function () {
             if (!fromCache && self.cache && 'function' == typeof self.cache.set) {
               var nestedCache = flatnest.nest(cache);
               var cacheArgs = [execution.fn.name];
-              nestedCache.forEach(function(i) {
-                cacheArgs.push(i);
+              nestedCache.forEach(function(v, index) {
+                cacheArgs.push({
+                  diff: v,
+                  source: args[index]
+                });
               });
               //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
               // cache is likely async ....
