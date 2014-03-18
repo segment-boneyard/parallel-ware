@@ -255,6 +255,7 @@ Parallel.prototype.run = function () {
             // from this module. If we have a cache plugin, use it
             if (!fromCache && self.cache && 'function' == typeof self.cache.set) {
               var nestedCache = flatnest.nest(cache);
+              if(!Array.isArray(nestedCache)) return done();
               var cacheArgs = [execution.fn.name];
               nestedCache.forEach(function(v, index) {
                 cacheArgs.push({
