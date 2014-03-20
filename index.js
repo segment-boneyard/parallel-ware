@@ -334,6 +334,10 @@ Parallel.prototype.run = function () {
 
       // pass back the total amount of executed steps
       batch.end(function (err) {
+        emitter.emit('update', {
+          type: 'batch end',
+          log: 'Batch ended'
+        });
         if (err) {
           err.forEach(function(e) {
             if (e) {
