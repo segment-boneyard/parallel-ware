@@ -257,10 +257,10 @@ Parallel.prototype.run = function () {
               var nestedCache = flatnest.nest(cache);
               if (Object.prototype.toString.call( nestedCache ) !== '[object Array]') return done();
               var cacheArgs = [execution.fn.name];
-              nestedCache.forEach(function(v, index) {
+              args.forEach(function(v, index) {
                 cacheArgs.push({
-                  diff: v,
-                  source: args[index]
+                  diff: nestedCache[index],
+                  source: v
                 });
               });
               //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
