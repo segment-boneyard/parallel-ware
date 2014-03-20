@@ -447,8 +447,10 @@ function executeCache (cacheArgs, cacheFn, async, callback) {
     debug('executing cache for %s', arr[0]);
     if (async) {
       // asynchronous case
-      arr.push(callback);
-      cacheFn.apply(null, arr);
+      process.nextTick(function () {
+        arr.push(callback);
+        cacheFn.apply(null, arr);
+      });
     } else {
       // synchronous case
       process.nextTick(function () {
