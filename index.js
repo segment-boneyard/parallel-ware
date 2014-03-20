@@ -268,6 +268,7 @@ Parallel.prototype.run = function () {
               var cacheFn = self.cache.set;
               var async = cacheFn.length > args.length + 1;
               executeCache(cacheArgs, cacheFn, async, function(err, result) {
+                debug('competed executing cache function for %s', execution.fn.name);
                 done();
               });
             } else {
@@ -443,13 +444,11 @@ function executeCache (cacheArgs, cacheFn, async, callback) {
   });
   d.run(function(){
     var arr = [].slice.call(cacheArgs);
+    debug('executing cache for %s', arr[0]);
     if (async) {
       // asynchronous case
-      // wrap in a tick to allow to remedy call stack explosion
-      process.nextTick(function () {
-        arr.push(callback);
-        cacheFn.apply(null, arr);
-      });
+      arr.push(callback);
+      cacheFn.apply(null, arr);
     } else {
       // synchronous case
       process.nextTick(function () {
