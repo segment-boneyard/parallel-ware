@@ -252,8 +252,8 @@ Parallel.prototype.run = function () {
               log: format('Success %s', execution.fn.name)
             });
             // cache now contains all the new values
-            // from this module. If we have a cache plugin, use it
-            if (!fromCache && self.cache && 'function' == typeof self.cache.set) {
+            // from this module. If we have a cache plugin, use it if there wasn't an error
+            if (!err && !fromCache && self.cache && 'function' == typeof self.cache.set) {
               var nestedCache = flatnest.nest(cache);
               if (Object.prototype.toString.call( nestedCache ) !== '[object Array]') return done();
               var cacheArgs = [execution.fn.name];
