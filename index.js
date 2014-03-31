@@ -139,8 +139,8 @@ Parallel.prototype.run = function () {
       waitBatch.push(function (done) {
         executeWait(args, execution.wait, function (err, ready) {
           if (err) {
-            executed.executed = true; // if error in wait, dont execute again
-            error.add(err);
+            execution.executed = true; // if error in wait, dont execute again
+            error.add(err, execution.fn.name);
             return done();
           }
 
@@ -203,7 +203,7 @@ Parallel.prototype.run = function () {
                 type: 'execution complete',
                 log: format('Error %s %s', execution.fn.name, error.message)
               });
-              error.add(err);
+              error.add(err, execution.fn.name);
               return done();
             }
 
@@ -342,7 +342,7 @@ Parallel.prototype.run = function () {
         if (err) {
           err.forEach(function(e) {
             if (e) {
-              error.add(e);
+              error.add(e, 'BATCH');
             }
           });
         }
@@ -512,7 +512,8 @@ inherit(BatchError, Error);
  * @returns {BatchError}
  */
 
-BatchError.prototype.add = function (err) {
+BatchError.prototype.add = function (err, name) {
+  err.message = (name || 'Unknown') + ': ' + err.message;
   this.errors.push(err);
   this.message = this.errors.length + ' error(s) have occured: ' +
     this.errors.map(function (err) { return err.message; }).join(', ');
