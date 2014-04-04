@@ -3,7 +3,22 @@ var Batch = require('batch');
 var debug = require('debug')('parallel');
 var defaults = require('defaults');
 var Emitter = require('events').EventEmitter;
-var inherit = require('util').inherits;
+var util = require('util');
+var inherit = util.inherits;
+var format = util.format;
+var domain = require('domain');
+var flatnest = require('flatnest');
+
+// events
+// log
+//'execution_complete'
+// 'batch_started'
+// 'batch_ended'
+// 'middleware_ended'
+
+// progress
+// progress
+
 
 /**
  * Expose `Parallel`.
@@ -46,10 +61,10 @@ Parallel.prototype.concurrency = function (max) {
  * @return {Parallel}
  */
 
-Parallel.prototype.use = function (fn) {
+Parallel.prototype.use = function (fn, tier, timeout) {
   if (typeof fn !== 'function')
     throw new Error('You must provide a function.');
-  this.middleware.push([immediate, fn]);
+  this.middleware.push([immediate, fn, tier, timeout]);
   return this;
 };
 
@@ -62,10 +77,25 @@ Parallel.prototype.use = function (fn) {
  * @return {Parallel}
  */
 
-Parallel.prototype.when = function (wait, fn) {
+Parallel.prototype.when = function (wait, fn, tier, timeout) {
   if (typeof wait !== 'function' || typeof fn !== 'function')
     throw new Error('You must provide a `wait` and `fn` functions.');
-  this.middleware.push([wait, fn]);
+  this.middleware.push([wait, fn, tier, timeout]);
+  return this;
+};
+
+Parallel.prototype.conflict = function (fn) {
+  if (typeof fn !== 'function')
+    throw new Error('You must provide a conflict function.');
+  this.conflictFn = fn;
+  return this;
+};
+
+Parallel.prototype.setCache = function (fn) {
+  fn = fn || {};
+  if (typeof fn.set !== 'function' || typeof fn.get !== 'function')
+    throw new Error('You must provide a cache with a get and set function');
+  this.cache = fn;
   return this;
 };
 
@@ -81,79 +111,287 @@ Parallel.prototype.when = function (wait, fn) {
 Parallel.prototype.run = function () {
   var self = this;
   var last = arguments[arguments.length - 1];
-  var callback = 'function' == typeof last ? last : null;
+  var inputCallback = 'function' == typeof last ? last : null;
   var error = new BatchError();
-  var args = callback
+  var args = inputCallback
     ? [].slice.call(arguments, 0, arguments.length - 1)
     : [].slice.call(arguments);
 
   var executions = this.middleware.map(function (fns) {
-    return new Execution(fns[0], fns[1]);
+    return new Execution(fns[0], fns[1], fns[2], fns[3]);
   });
+
+  var emitter = new Emitter();
+
+  // lets make the assumption that args are objects
+  var updateArgs = {};
 
   function runBatch (callback) {
     var executed = 0; // count the amount of executed middleware
 
-    var batch = new Batch()
-      .concurrency(self.options.middleware);
+    var waitBatch = new Batch().concurrency(self.options.middleware);
+    var batch = new Batch().concurrency(self.options.middleware);
+    batch.throws(false);
 
+    // run all wait functions
     executions.forEach(function (execution) {
       if (execution.executed) return; // we've already executed this
-      batch.push(function (done) {
+      waitBatch.push(function (done) {
         executeWait(args, execution.wait, function (err, ready) {
           if (err) {
-            executed.executed = true; // if error in wait, dont execute again
-            return error.add(err);
+            execution.executed = true; // if error in wait, dont execute again
+            error.add(err, execution.fn.name);
+            return done();
           }
 
-          if (!ready) return done(); // we're not readyso return
-
-          var arr = [].slice.call(args);
-          arr.push(function (err) {
-            if (err) error.add(err);
-            executed += 1;
-            execution.executed = true;
-            debug('middleware %s executed', execution.fn.name);
-            done(); // don't pass back the error to batch or it'll exit
-          });
-
-          debug('middleware %s is ready to run ..', execution.fn.name);
-          execution.fn.apply(null, arr);
+          execution.ready = ready;
+          done();
         });
       });
     });
 
-    batch.on('progress', function (progress) {
-      self.emit('progress', progress);
-    });
+    // upon completion get all ready executions
+    // sort by tier and run all those in the highest tier
+    // this works for case of no tier 0 ready, but a tier 1 ready.
+    waitBatch.end(function (err) {
+      var sortedExecutions = executions.filter(function(e) {
+        return !e.executed && e.ready;
+      }).sort(function(a, b) {
+        return a.tier - b.tier;
+      });
+      var cuttoffIndex = sortedExecutions.length;
+      var lowest = (sortedExecutions[0] && sortedExecutions[0].tier) || 0;
+      for (var i=0; i < cuttoffIndex; i++) {
+        if (sortedExecutions[i].tier > lowest) {
+          cuttoffIndex = i;
+        }
+      }
 
-    // pass back the total amount of executed steps
-    batch.end(function (err) {
-      batch.removeAllListeners();
-      debug('finished batch with %d executions', executed);
-      callback(err, executed);
+      emitter.emit('update', {
+        type: 'wait complete',
+        log: format('%d ready and %d queued', sortedExecutions.length, cuttoffIndex)
+      });
+
+      if (cuttoffIndex < sortedExecutions.length) {
+        sortedExecutions.slice(cuttoffIndex).forEach(function(execution) {
+          // reset to not ready.
+          execution.ready = false;
+        });
+      }
+
+      sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
+        batch.push(function (done) {
+          var arr = [].slice.call(args);
+          var cbExecuted = false;
+
+          var cb = function (err, retry, fromCache) {
+            if (cbExecuted) {
+              return;
+            } else {
+              cbExecuted = true;
+            }
+
+            executed += 1;
+            debug('middleware %s executed', execution.fn.name);
+            if (retry) {
+              // reset to unready to possibly run again
+              debug('middleware %s retrying', execution.fn.name);
+              emitter.emit('update', {
+                type: 'execution complete',
+                log: format('Retrying %s', execution.fn.name)
+              });
+              execution.executed = false;
+              execution.ready = false;
+              return done();
+            }
+            execution.executed = true;
+            if (err) {
+              emitter.emit('update', {
+                type: 'execution complete',
+                log: format('Error %s %s', execution.fn.name, error.message)
+              });
+              error.add(err, execution.fn.name);
+              return done();
+            }
+
+            var flattened = flatnest.flatten(args);
+            var cache = {};
+            // find diff of flattend from updatArgs
+            // store updated values in cache for savin
+            Object.keys(flattened).forEach(function(k) {
+              var v = {
+                value: flattened[k],
+                fnName: execution.fn.name
+              };
+              if (updateArgs.hasOwnProperty(k)) {
+                if (v.value !== updateArgs[k].value) {
+                  // merge conflict
+                  // store all previous options under a choices key
+                  var choicesKey = k + '__choices';
+                  if (!updateArgs[choicesKey]) {
+                    updateArgs[choicesKey] = [updateArgs[k], v];
+                  } else {
+                    updateArgs[choicesKey].push(v);
+                  }
+                  // resolve conflict if we have a conflict function defined
+                  if ('function' == typeof self.conflictFn) {
+                    var conflictArgs = [k, updateArgs[k], v, updateArgs[choicesKey]].concat([].slice.call(args));
+                    v = self.conflictFn.apply(null, conflictArgs);
+                    // make sure args at path have the correct value
+                    flatnest.replace(args, k, v.value);
+                  }
+                  updateArgs[k] = v;
+
+                  // store value in cache
+                  cache[k] = flattened[k];
+                }
+                // otherwise value is the same - assume earlier execution set it
+              } else {
+                // store the new value in our list.
+                updateArgs[k] = v;
+                // store value in cache
+                cache[k] = flattened[k];
+              }
+            });
+
+            emitter.emit('update', {
+              type: 'execution complete',
+              log: format('Success %s', execution.fn.name)
+            });
+            // cache now contains all the new values
+            // from this module. If we have a cache plugin, use it if there wasn't an error
+            if (!err && !fromCache && self.cache && 'function' == typeof self.cache.set) {
+              var nestedCache = flatnest.nest(cache);
+              if (Object.prototype.toString.call( nestedCache ) !== '[object Array]') return done();
+              var cacheArgs = [execution.fn.name];
+              args.forEach(function(v, index) {
+                cacheArgs.push({
+                  diff: nestedCache[index],
+                  source: v
+                });
+              });
+              //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
+              // cache is likely async ....
+              var cacheFn = self.cache.set;
+              var async = cacheFn.length > args.length + 1;
+              executeCache(cacheArgs, cacheFn, async, function(err, result) {
+                debug('competed executing cache function for %s', execution.fn.name);
+                done();
+              });
+            } else {
+              done(); // don't pass back the error to batch or it'll exit
+            }
+          };
+
+          arr.push(cb);
+
+          debug('middleware %s is ready to run ..', execution.fn.name);
+          // wrap it in a custom domain to convert thrown exceptions into returned ones
+          var d = domain.create();
+          d.on('error', function(err){
+            console.log('domain received %s', err);
+            debug('error processing parallel function: %s \n %s', err.message, err.stack);
+            cb(err);
+          });
+          d.run(function() {
+            emitter.emit('update', {
+              type: 'execution starting',
+              log: format('Starting %s', execution.fn.name)
+            });
+            execution.executed = true;
+            // cache or execute;
+            if (self.cache && 'function' == typeof self.cache.get) {
+              var cacheArgs = [execution.fn.name].concat([].slice.call(args));
+              //var cacheArgs = [execution.fn.name].concat([].slice.call(flatnest.nest(cache)));
+              // cache is likely async ....
+              var cacheFn = self.cache.get;
+              var async = cacheFn.length > args.length + 1;
+              executeCache(cacheArgs, cacheFn, async, function(err, result) {
+                // result is true if cache found
+                if (err) debug('Cache get for %s, had error %s', execution.fn.name, err.message);
+                if (result) {
+                  // consider passing cache info to cb
+                  cb(null, false, true);
+                } else {
+                  // cache miss - run function
+                  execution.fn.apply(null, arr);
+                }
+              });
+            } else {
+              execution.fn.apply(null, arr);
+            }
+
+            // make sure we execute cb within timeout
+            if (execution.timeout > 0) {
+              setTimeout(function() {
+                cb(new Error('ParallelWare kill execution since it exceeded timeout of ' + execution.timeout));
+              }, execution.timeout);
+            }
+          });
+        });
+      });
+
+      batch.on('progress', function (progress) {
+        emitter.emit('update', {
+          type: 'progress',
+          log: format('Batch updated to pending: %d, total: %d, complete: %d', progress.pending, progress.total, progress.complete),
+          data: progress
+        });
+        self.emit('progress', progress);
+      });
+
+      // pass back the total amount of executed steps
+      batch.end(function (err) {
+        emitter.emit('update', {
+          type: 'batch end',
+          log: 'Batch ended'
+        });
+        if (err) {
+          err.forEach(function(e) {
+            if (e) {
+              error.add(e, 'BATCH');
+            }
+          });
+        }
+        batch.removeAllListeners();
+        debug('finished batch with %d executions', executed);
+        callback(err, executed);
+      });
     });
 
     return batch;
   }
 
   function next () {
+    emitter.emit('update', {
+      type: 'batch start',
+      log: 'Batch started'
+    });
     var batch = runBatch(function (err, executed) {
+      emitter.emit('update', {
+        type: 'batch ended',
+        log: format('Batch completed with %d executions and err: %s', executed, err && err.message)
+      });
       // if we executed anything, run through the middleware again
       // to make sure no wait dependencies were blocked
       if (executed > 0) return next();
       // at this point, there's nothing left to execute, so return
-      if (callback) {
+      emitter.emit('update', {
+        type: 'middleware ended',
+        log: format('middleware completed all possible jobs')
+      });
+      if (inputCallback) {
         err = error.errors.length > 0 ? error : null;
         var arr = [].slice.call(args);
         arr.unshift(err);
-        callback.apply(null, arr);
+        inputCallback.apply(null, arr);
       }
     });
   }
 
   next();
-  return this;
+  emitter.middleware = this;
+  return emitter;
 };
 
 /**
@@ -166,22 +404,69 @@ Parallel.prototype.run = function () {
  */
 
 function executeWait (args, waitFn, callback) {
-  var arr = [].slice.call(args);
-  if (waitFn.length > args.length) {
-    // asynchronous case, more arguments than inputs so assume callback
-    // wrap in a tick to allow to remedy call stack explosion
-    process.nextTick(function () {
-      arr.push(callback);
-      waitFn.apply(null, arr);
-    });
-  } else {
-    // synchronous case, amount of arguments is less or equal to arity
-    process.nextTick(function () {
-      var result = waitFn.apply(null, arr);
-      if (result instanceof Error) return callback(result);
-      callback(null, result);
-    });
-  }
+  // wrap everyithing in a domain to convert thrown errors into returned errors.
+  var d = domain.create();
+  d.on('error', function(err){
+    // handle the error safely
+    debug('error processing wait function: %s \n %s', err.message, err.stack);
+    callback(err);
+  });
+  d.run(function(){
+    var arr = [].slice.call(args);
+    if (waitFn.length > args.length) {
+      // asynchronous case, more arguments than inputs so assume callback
+      // wrap in a tick to allow to remedy call stack explosion
+      process.nextTick(function () {
+        arr.push(callback);
+        waitFn.apply(null, arr);
+      });
+    } else {
+      // synchronous case, amount of arguments is less or equal to arity
+      process.nextTick(function () {
+        var result = waitFn.apply(null, arr);
+        if (result instanceof Error) return callback(result);
+        callback(null, result);
+      });
+    }
+  });
+}
+
+
+/**
+ * Executs the cache function with support for synchronous (equal `args.length`)
+ * and asynchronous (equals `args.length` + 1) function signatures.
+ *
+ * @param {Array|Object} cacheArgs
+ * @param {Function} cacheFn
+ * @param {Function} callback
+ */
+
+function executeCache (cacheArgs, cacheFn, async, callback) {
+  // wrap everyithing in a domain to convert thrown errors into returned errors.
+  var d = domain.create();
+  d.on('error', function(err){
+    // handle the error safely
+    debug('error processing cache function: %s \n %s', err.message, err.stack);
+    callback(err);
+  });
+  d.run(function(){
+    var arr = [].slice.call(cacheArgs);
+    debug('executing cache for %s', arr[0]);
+    if (async) {
+      // asynchronous case
+      process.nextTick(function () {
+        arr.push(callback);
+        cacheFn.apply(null, arr);
+      });
+    } else {
+      // synchronous case
+      process.nextTick(function () {
+        var result = cacheFn.apply(null, arr);
+        if (result instanceof Error) return callback(result);
+        callback(null, result);
+      });
+    }
+  });
 }
 
 /**
@@ -201,9 +486,12 @@ function immediate () {
  * @param {Function} fn
  */
 
-function Execution (wait, fn) {
+function Execution (wait, fn, tier, timeout) {
   this.wait = wait;
   this.fn = fn;
+  this.tier = tier || 0;
+  this.timeout = timeout || 0;
+  this.ready = false;
   this.executed = false;
 }
 
@@ -231,9 +519,10 @@ inherit(BatchError, Error);
  * @returns {BatchError}
  */
 
-BatchError.prototype.add = function (err) {
+BatchError.prototype.add = function (err, name) {
+  err.message = (name || 'Unknown') + ': ' + err.message;
   this.errors.push(err);
   this.message = this.errors.length + ' error(s) have occured: ' +
-    this.errors.map(function (err) { return err.toString(); }).join(', ');
+    this.errors.map(function (err) { return err.message; }).join(', ');
   return this;
 };

@@ -61,6 +61,30 @@ describe('parallel-ware', function () {
       });
   });
 
+  it('should be able to handle conflicts', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(wait(vector, 1), function check (vector, next) {
+        assert(vector[1]); // shouldn't get executed until vector[1] executed
+        vector[2] = true;
+        vector[1] = false;
+        next();
+      })
+      .use(mark(vector, 0))
+      .use(mark(vector, 1))
+      .conflict(function(key, existing, candidate) {
+        if (candidate.value) {
+          return candidate;
+        }
+        return existing;
+      })
+      .run(vector, function (err) {
+        if (err) return done(err);
+        assert.deepEqual(vector, [true, true, true]);
+        done();
+      });
+  });
+
   it('should never execute a non-ready middleware', function (done) {
     var vector = [false, false, false];
     var middleware = parallel()
@@ -77,15 +101,66 @@ describe('parallel-ware', function () {
   it('should not halt execution for an error', function (done) {
     var vector = [false, false, false];
     var error = new Error('An error');
+    var thrownError = new Error('Thrown err');
     var middleware = parallel()
       .use(mark(vector, 0))
       .use(fail(error))
+      .use(failThrow(thrownError))
       .use(mark(vector, 2))
       .run(function (err) {
         assert(err);
-        assert(err.errors.length === 1);
+        assert(err.errors.length === 2);
         assert(err.errors[0] === error);
+        assert(err.errors[1] === thrownError);
         assert.deepEqual(vector, [true, false, true]);
+        done();
+      });
+  });
+
+
+  it('should group executions by tier', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(wait(vector, 1), function(next) {
+        assert.deepEqual(vector, [false, true, false]);
+        vector[2] = true;
+        next();
+      }, 1)
+      .when(wait(vector, 2), function(next) {
+        assert.deepEqual(vector, [false, true, true]);
+        vector[0] = true;
+        next();
+      })
+      .use(mark(vector, 1))
+      .run(function (err) {
+        assert.deepEqual(vector, [true, true, true]);
+        done();
+      });
+  });
+
+  it('should group executions by tier and not execute some', function (done) {
+    var vector = [false, false, false];
+    var middleware = parallel()
+      .when(function() {
+        // as soon as vector 0 is set we execute
+        return vector[0] && !vector[1];
+      }, function(next) {
+        // this should never run
+        assert(false);
+        next();
+      }, 1)
+      .when(wait(vector, 0), function(next) {
+        // higher tier plugin that will execute first
+        assert.deepEqual(vector, [true, false, false]);
+        // setting vector 1 prevents first plugin from running
+        vector[1] = true;
+        vector[2] = true;
+        next();
+      })
+      .use(mark(vector, 0))
+      .run(function(err) {
+        assert(!err);
+        assert.deepEqual(vector, [true, true, true]);
         done();
       });
   });
@@ -100,6 +175,101 @@ describe('parallel-ware', function () {
     });
     middleware.run();
   });
+
+  it('should emit progress events for a specific job', function (done) {
+    var vector = [false, false, false, false];
+    var middleware = parallel()
+      .use(function firstMark(next){vector[0] = true; next();})
+      .use(function thirdMark(next){setTimeout(function() {vector[2] = true; next();}, 500);});
+    var middlewaretwo = parallel()
+      .use(function secondMark(next){vector[1] = true; next();})
+      .use(function fourthMark(next){vector[3] = true; next();});
+
+    var firstEmitter = middleware.run(function(err) {
+    });
+    firstEmitter.on('update', function(update) {
+      if (update.type.indexOf('execution complete') === 0) {
+        assert.deepEqual(vector, [true, true, true, true]);
+        done();
+      }
+    });
+    middlewaretwo.run(function(err) {
+      assert.deepEqual(vector, [true, true, false, true]);
+    });
+
+  });
+
+  it('should respect execution timeouts', function (done) {
+    var vector = [false, false];
+    var middleware = parallel()
+      .use(function firstMark(next){setTimeout(function() {vector[2] = true; next();}, 1000);}, null, 500);
+
+    middleware.run(function(err) {
+      assert(err);
+      assert.deepEqual(vector, [false, false]);
+      done();
+    });
+
+  });
+
+  it('should be fire cache events for execution', function (done) {
+    function CacheFn () {
+      if (!(this instanceof CacheFn)) return new CacheFn();
+    }
+    CacheFn.prototype.set = function(key, vectorChangeObject, callback) {
+      var vectorChange = vectorChangeObject.diff;
+      if (vectorChange[2]) {
+        assert(key == 'check');
+      }
+      if (key == 'initialize') {
+        vectorChange.forEach(function(v) {
+          assert(!v);
+        });
+      } else {
+        vectorChange.forEach(function(v) {
+          assert(v);
+        });
+      }
+      callback(null);
+    };
+    CacheFn.prototype.get = function(key, vector, callback) {
+      if (key === 'cachedValue') {
+        vector[3] = 'cached';
+        return callback(null, true);
+      }
+      return callback(null, false);
+    };
+
+    var cacheInstance = new CacheFn();
+    var initialVector = [false, false, false, false, false];
+    var middleware = parallel()
+      .setCache(cacheInstance)
+      .when(waitInput(1), function check (vector, next) {
+        assert(vector[1]); // shouldn't get executed until vector[1] executed
+        vector[2] = true;
+        next();
+      })
+      .use(function initialize(vector, next) {
+        initialVector.forEach(function (v) {vector.push(v);});
+        next();
+      })
+      .use(function cachedValue(vector, next) {
+        vector[3] = 'newValueIgnored';
+        next();
+      })
+      .use(function cacheMiss(vector, next) {
+        vector[4] = 'cacheMiss';
+        next();
+      })
+      .use(markInput(0))
+      .use(markInput(1))
+      .run([], function (err, vector) {
+        if (err) return done(err);
+        assert.deepEqual(vector, [true, true, true, 'cached', 'cacheMiss']);
+        done();
+      });
+  });
+
 });
 
 /**
@@ -114,6 +284,13 @@ describe('parallel-ware', function () {
 function mark (vector, position, fn) {
   return function mark () {
     var next = arguments[arguments.length - 1];
+    vector[position] = true;
+    next();
+  };
+}
+
+function markInput (position) {
+  return function markInput (vector, next) {
     vector[position] = true;
     next();
   };
@@ -134,6 +311,12 @@ function wait (vector, position) {
   };
 }
 
+function waitInput (position) {
+  return function (vector) {
+    return vector[position];
+  };
+}
+
 /**
  * Return a middleware that always fails with `err`.
  *
@@ -145,6 +328,19 @@ function fail (err) {
   return function () {
     var next = arguments[arguments.length - 1];
     next(err);
+  };
+}
+
+/**
+ * Return a middleware that always fails by throwing an `err`.
+ *
+ * @param {Error} err
+ * @return {Function}
+ */
+
+function failThrow (err) {
+  return function () {
+    throw err;
   };
 }
 
