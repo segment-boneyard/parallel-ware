@@ -172,6 +172,13 @@ Parallel.prototype.run = function () {
         log: format('%d ready and %d queued', sortedExecutions.length, cuttoffIndex)
       });
 
+      if (cuttoffIndex < sortedExecutions.length) {
+        sortedExecutions.slice(cuttoffIndex).forEach(function(execution) {
+          // reset to not ready.
+          execution.ready = false;
+        });
+      }
+
       sortedExecutions.slice(0, cuttoffIndex).forEach(function (execution) {
         batch.push(function (done) {
           var arr = [].slice.call(args);
